@@ -33,9 +33,9 @@ def send_csv_data(max_duration_minutes=5):
                 producer.send(topic_name, value=row)
                 print(f"Sent: {row}")
 
-                time.sleep(random.uniform(0.1, 1))
+                time.sleep(random.uniform(0.1, 0.8))
 
-        time.sleep(2)
+        time.sleep(1)
 
     print("Data sending completed after 3 batches.")
 
