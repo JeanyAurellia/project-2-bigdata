@@ -3,50 +3,55 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const cors = require('cors');
-const app = express();
-const PORT = 3000;
 const os = require('os');
 
-// Get the user's home directory
-const homeDir = os.homedir();
+const app = express();
+const PORT = 3000;
 
-// Resolve the correct path using the home directory
-const clusteringResultsDir = path.resolve(homeDir, 'project-2/spark/cluster');
+// Middleware untuk mengizinkan CORS
+app.use(cors());
+app.use(express.json()); // Untuk menerima data JSON dari body request
+
+// Dapatkan direktori home user
+const homeDir = os.homedir();
+const clusteringResultsDir = path.resolve(homeDir, 'project-2/spark/cluster'); // Pastikan path ini benar
 
 let clusteringResults = [];
 
-// Function to read and parse a CSV file
+// Fungsi untuk membaca dan mem-parsing file CSV
 function readBatchFile(filePath) {
     return new Promise((resolve, reject) => {
         const results = [];
         fs.createReadStream(filePath)
             .pipe(csv())
-            .on('data', (row) => results.push(row))  // Collect rows into an array
+            .on('data', (row) => results.push(row))  // Kumpulkan baris ke dalam array
             .on('end', () => {
-                clusteringResults = clusteringResults.concat(results);  // Merge results into the main array
-                console.log(`CSV file ${filePath} successfully processed`);
-                resolve();
+                resolve(results);  // Kembalikan hasil saat selesai
             })
-            .on('error', reject);  // Reject if there's an error
+            .on('error', (error) => {
+                console.error(`Error reading file ${filePath}:`, error);
+                reject(error);  // Tolak promise jika ada error
+            });
     });
 }
 
-// Function to get all CSV files inside a folder
+// Fungsi untuk mendapatkan semua file CSV dalam folder
 function getCsvFilesFromDir(dir) {
     return new Promise((resolve, reject) => {
         fs.readdir(dir, (err, files) => {
             if (err) {
+                console.error(`Error reading directory ${dir}:`, err);
                 reject(err);
             } else {
-                const csvFiles = files.filter(file => file.endsWith('.csv'));  // Filter only CSV files
-                const filePaths = csvFiles.map(file => path.join(dir, file));  // Get the full path of the files
+                const csvFiles = files.filter(file => file.endsWith('.csv'));
+                const filePaths = csvFiles.map(file => path.join(dir, file));
                 resolve(filePaths);
             }
         });
     });
 }
 
-// Load all batch files from each batch folder
+// Memuat semua file batch dari setiap folder batch
 async function loadBatchFiles() {
     try {
         const batchDirs = [
@@ -55,41 +60,77 @@ async function loadBatchFiles() {
             path.join(clusteringResultsDir, 'clustering_results_batch_3')
         ];
 
-        // Get CSV files from all batch directories
         let allBatchFiles = [];
         for (const dir of batchDirs) {
-            const files = await getCsvFilesFromDir(dir);
-            allBatchFiles = allBatchFiles.concat(files);  // Merge all CSV file paths
+            if (fs.existsSync(dir)) {  // Cek jika folder batch ada
+                const files = await getCsvFilesFromDir(dir);
+                allBatchFiles = allBatchFiles.concat(files);
+            } else {
+                console.warn(`Directory ${dir} does not exist. Skipping...`);
+            }
         }
 
-        // Process each file in allBatchFiles
-        await Promise.all(allBatchFiles.map(readBatchFile));
-        
-        // Define the route for all clustering results
-        app.get('/api/clustering-results', (req, res) => {
-            res.json(clusteringResults);  // Return all clustering results
-        });
+        // Proses setiap file di allBatchFiles
+        const fileData = await Promise.all(allBatchFiles.map(readBatchFile));
+        clusteringResults = fileData.flat();  // Gabungkan semua hasil ke clusteringResults
 
-        // Define the route for specific results by Unique id (used instead of transID)
-        app.get('/api/clustering-results/:uniqueId', (req, res) => {
-            const uniqueId = req.params.uniqueId;  // Fetch Unique id from the URL
-            const result = clusteringResults.find((item) => item['Unique id'] === uniqueId);  // Search by Unique id
+        console.log(`Loaded ${clusteringResults.length} records from CSV files.`);
 
-            if (result) {
-                res.json(result);  // Return the specific result
-            } else {
-                res.status(404).send('Unique id not found');  // Return 404 if not found
-            }
-        });
+        // Define API endpoints setelah data selesai di-load
+        defineApiEndpoints();
 
-        // Start the Express server
+        // Mulai server Express
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
         });
     } catch (error) {
-        console.error('Error loading batch files:', error);  // Handle errors
+        console.error('Error loading batch files:', error);
     }
 }
 
-// Start loading batch files
+// Mendefinisikan endpoint API
+function defineApiEndpoints() {
+    // Endpoint untuk mendapatkan statistik setiap cluster (misalnya, total jumlah dan nilai rata-rata untuk beberapa fitur)
+    app.get('/api/cluster-stats', (req, res) => {
+        const clusterStats = {};
+        clusteringResults.forEach(result => {
+            const cluster = result['prediction'];
+            if (!clusterStats[cluster]) {
+                clusterStats[cluster] = { count: 0, totalCSAT: 0, totalPrice: 0 };
+            }
+            clusterStats[cluster].count += 1;
+            clusterStats[cluster].totalCSAT += parseFloat(result['CSAT Score']) || 0;
+            clusterStats[cluster].totalPrice += parseFloat(result['Item_price']) || 0;
+        });
+
+        // Hitung rata-rata berdasarkan total
+        const stats = Object.keys(clusterStats).map(cluster => ({
+            cluster,
+            count: clusterStats[cluster].count,
+            avgCSAT: clusterStats[cluster].totalCSAT / clusterStats[cluster].count,
+            avgPrice: clusterStats[cluster].totalPrice / clusterStats[cluster].count
+        }));
+
+        res.json(stats);
+    });
+
+    // Endpoint untuk mengembalikan hasil clustering untuk Unique id tertentu
+    app.get('/api/clustering-results/:uniqueId', (req, res) => {
+        const uniqueId = req.params.uniqueId;
+        const result = clusteringResults.find((item) => item['Unique id'] === uniqueId);
+
+        if (result) {
+            res.json(result);
+        } else {
+            res.status(404).send('Unique id tidak ditemukan');
+        }
+    });
+
+    // Endpoint untuk mengembalikan seluruh hasil clustering
+    app.get('/api/clustering-results', (req, res) => {
+        res.json(clusteringResults);
+    });
+}
+
+// Mulai proses memuat file batch
 loadBatchFiles();
