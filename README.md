@@ -1,6 +1,6 @@
 # Project Big Data 2
-
-| **Kelompok 5**           | **NIM**      |
+ **Kelompok 5** 
+|         **Nama**         |   **NRP**    |
 |--------------------------|--------------|
 | Jeany Aurellia P.D       | 5027221008   |
 | Clara Valentina          | 5027221016   |
